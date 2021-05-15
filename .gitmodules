@@ -1,0 +1,3 @@
+[submodule "build/yapre"]
+	path = build/yapre
+	url = git@github.com:wo1fsea/yapre.git
