@@ -29,6 +29,5 @@ jobs:
           cd ../..
       - name: Copy files to docs
         run: |
-          cd ./docs
-          rm -f *
+          rm -f ./docs/*
           cp ./build/yapre/build/emscripten/yapre/* ./docs
