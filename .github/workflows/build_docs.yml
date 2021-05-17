@@ -29,7 +29,7 @@ jobs:
           cd ../..
       - name: Copy files to docs
         run: |
-          rm -f ./docs/*
+          rm -f ./docs/*.*
           cp ./build/yapre/build/emscripten/yapre/* ./docs
       - name: Commit and push
         uses: EndBug/add-and-commit@v7
