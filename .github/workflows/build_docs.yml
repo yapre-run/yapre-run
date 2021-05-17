@@ -31,8 +31,8 @@ jobs:
         run: |
           rm -f ./docs/*
           cp ./build/yapre/build/emscripten/yapre/* ./docs
-          
-      - uses: EndBug/add-and-commit@v7
+      - name: Commit and push
+        uses: EndBug/add-and-commit@v7
         with:
           message: 'Github Action Auto Build'
           add: '*.* --force'
