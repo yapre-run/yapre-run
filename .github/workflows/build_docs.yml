@@ -25,7 +25,7 @@ jobs:
       - name: Build
         run: |
           cd ./build/yapre/
-          sh ./build_emscripten.sh
+          sh ./build_scripts/build_emscripten.sh
           cd ../..
       - name: Copy files to docs
         run: |
