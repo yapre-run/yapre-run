@@ -1,6 +1,8 @@
-local yapre = yapre
-
 package.path = package.path .. ";./lua/?.lua;./lua/?/init.lua"
+
+local yapre = yapre
+local debug_log = require("utils.debug_log")
+
 
 yapre.dbg = require("utils.debugger")
 yapre.dbg.read = yapre.DebugRead
@@ -92,7 +94,7 @@ local function OnKey(timestamp, state, multi, keycode)
         keycode = emscripten_keycode_mapping:GetKeyCode(keycode)
     end
     --]]
-    print(string.format("[OnKey] %i:%i:%i:%i", timestamp, state, multi, keycode))
+    debug_log.log(string.format("[OnKey] %i:%i:%i:%i", timestamp, state, multi, keycode))
     if state == 1 then
         keypressed(keycode)
         -- self:OnKey(timestamp, state, multi, keycode)
@@ -123,7 +125,7 @@ local function drawScreen()
     end
     --]]
 
-    yapre.DrawSpriteWithImageData(imageData, 0, 0, 0, width, height, 0, 1, 1, 1)
+    yapre.DrawSpriteWithImageData(imageData, {0, 0, 0}, {width, height}, 0, {1, 1, 1})
 end
 
 local function update()
@@ -6553,6 +6555,7 @@ return complex
 local yecs = {}
 local copy = require("utils.copy")
 local uuid = require("utils.uuid")
+local debug_log = require("utils.debug_log")
 local deep_copy = copy.deep_copy
 
 -- world
@@ -6635,18 +6638,20 @@ function World:Resume()
 end
 
 function World:AddEntity(entity)
+    if getmetatable(entity) ~= "EntityMeta" then
+        return
+    end
+
     self.entities[entity.key] = entity
     entity.world = self
 end
 
 function World:RemoveEntity(entity)
-    local entity_key = nil
-    if getmetatable(entity) == "EntityMeta" then
-        entity_key = entity.key
-    else
-        entity_key = entity
-        entity = self.entities[entity_key]
-    end
+    self:RemoveEntityByKey(entity.key)
+end
+
+function World:RemoveEntityByKey(entity_key)
+    local entity = self.entities[entity_key]
 
     if entity and entity.world == self then
         entity.world = nil
@@ -6656,7 +6661,7 @@ end
 
 function World:AddSystem(system)
     if getmetatable(system) ~= "SystemMeta" then
-        system = yecs.System:New(system)
+        return
     end
 
     if system == nil or self.systems[system.key] ~= nil then
@@ -6673,23 +6678,38 @@ function World:AddSystem(system)
     system:Init()
 end
 
+function World:AddSystemByKey(system_key)
+    local system = yecs.System:New(system_key)
+    self:AddSystem(system)
+end
+
 function World:AddSystems(systems)
     for _, system in pairs(systems) do
         self:AddSystem(system)
     end
 end
 
+function World:AddSystemsByKeys(system_keys)
+    for _, system_key in pairs(system_keys) do
+        self:AddSystemByKey(system_key)
+    end
+end
+
 function World:RemoveSystem(system)
     if getmetatable(system) ~= "SystemMeta" then
-        system = self.systems[system]
+        return
     end
+    self:RemoveSystemByKey(system.key)
+end
 
+function World:RemoveSystemByKey(system_key)
+    local system = self.systems[system_key]
     if system == nil or system.world ~= self then
         return
     end
 
     system.world = nil
-    self.systems[system.key] = nil
+    self.systems[system_key] = nil
     system:Deinit()
     collectgarbage()
 
@@ -6724,6 +6744,12 @@ function World:GetEntity(condition)
     return nil
 end
 
+function World:GetEntitiesWithComponent(component_key)
+    return self:GetEntities(function(entity)
+        return entity.components[component_key]
+    end)
+end
+
 function World:GetEntitiesByTags(tags)
     return self:GetEntities(function(entity)
         if entity.tags == nil then
@@ -6751,22 +6777,37 @@ function World:GetEntityByTags(tags)
 end
 
 -- behavior
+local behavior_templates = {}
+
 local Behavior = {
-    behaviors = {}
+    key = "",
+    __metatable = "BehaviorMeta",
+    __tostring = function(self)
+        return string.format("<yecs-behavior: %s>", self.key)
+    end
 }
 
-function Behavior:Register(key, behavior)
-    if type(behavior) ~= 'table' then
-        return
-    end
-    self.behaviors[key] = behavior
+Behavior.__index = function(self, k)
+    return self.behavior_funcs[k] or self.super_behavior[k]
 end
 
-function Behavior:Get(key)
-    if not key then
-        return {}
+function Behavior:Register(key, behavior_funcs)
+    if type(behavior_funcs) ~= 'table' then
+        return
     end
-    return self.behaviors[key] or {}
+    behavior_templates[key] = behavior_funcs
+end
+
+function Behavior:New(key, super_behavior)
+    local behavior_funcs = behavior_templates[key] or {}
+
+    local behavior = setmetatable({
+        key = key,
+        behavior_funcs = behavior_funcs,
+        super_behavior = super_behavior
+    }, self)
+
+    return behavior
 end
 
 -- entity
@@ -6777,6 +6818,7 @@ local Entity = {
         return string.format("<yecs-entity: %s>", self.key)
     end
 }
+
 Entity.__index = function(self, k)
     return Entity[k] or self._behavior[k] or self.components[k]
 end
@@ -6784,7 +6826,7 @@ Entity.__newindex = function(self, k, v)
     if k == "world" then
         rawset(self, k, v)
     elseif self.components[k] == nil then
-        print("can not add property to entity")
+        debug_log.log("can not add property to entity")
         -- rawset(self, k, v)
     elseif type(v) == "table" then
         local component = self.components[k]
@@ -6794,31 +6836,41 @@ Entity.__newindex = function(self, k, v)
     end
 end
 
-function Entity:New(components, behavior_keys)
-    components = components or {}
-    local component_data = {}
-    local _behavior = {}
-    for _, bk in ipairs(behavior_keys) do
-        for k, v in pairs(Behavior:Get(bk)) do
-            _behavior[k] = v
+function Entity:_BehaviorOnInit()
+    local function _call_super(behavior)
+        if behavior then
+            _call_super(behavior.super_behavior)
+            if behavior.OnInit then
+                behavior.OnInit(self)
+            end
         end
+    end
+    _call_super(self._behavior)
+end
+
+function Entity:New(component_keys, behavior_keys)
+    component_keys = component_keys or {}
+    behavior_keys = behavior_keys or {}
+
+    local component_data = {}
+    local behavior = {}
+    for _, bk in ipairs(behavior_keys) do
+        behavior = Behavior:New(bk, behavior)
     end
 
     local entity = setmetatable({
         key = uuid.new(),
         components = component_data,
         behavior_keys = copy.copy(behavior_keys),
-        _behavior = _behavior
+        _behavior = behavior
     }, self)
 
-    for k, v in pairs(components) do
-        if getmetatable(v) ~= "ComponentMeta" then
-            v = yecs.Component:New(v)
-        end
+    for _, component_key in pairs(component_keys) do
+        local component = yecs.Component:New(component_key)
 
-        if v ~= nil then
-            v.entity = entity
-            component_data[v.key] = v
+        if component ~= nil then
+            component.entity = entity
+            component_data[component.key] = component
         end
     end
 
@@ -6836,9 +6888,7 @@ function Entity:AddComponent(component)
 end
 
 function Entity:AddBehavior(behavior_key)
-    for k, v in pairs(Behavior:Get(behavior_key)) do
-        self._behavior[k] = v
-    end
+    self._behavior = Behavior:New(behavior_key, self._behavior)
     table.insert(self.behavior_keys, behavior_key)
 end
 
@@ -6961,7 +7011,7 @@ function System:New(key)
 end
 
 function System:Update(delta_ms)
-    print(self, "Update", delta_ms)
+    debug_log.log(self, "Update", delta_ms)
 end
 
 function System:Init()
@@ -6981,10 +7031,10 @@ function EntityFactory:Make(entity_type, ex_behavior_keys)
         return nil
     end
 
-    local components = data.components
+    local component_keys = data.component_keys
     local behavior_keys = data.behavior_keys
 
-    local entity = yecs.Entity:New(components, behavior_keys)
+    local entity = yecs.Entity:New(component_keys, behavior_keys)
     if not entity then
         return nil
     end
@@ -6999,16 +7049,15 @@ function EntityFactory:Make(entity_type, ex_behavior_keys)
         entity:Init()
     end
 
-    if entity.OnInit then
-        entity:OnInit()
-    end
+    -- behaviors OnInit
+    entity:_BehaviorOnInit()
 
     return entity
 end
 
-function EntityFactory:Register(entity_type, components, behavior_keys)
+function EntityFactory:Register(entity_type, component_keys, behavior_keys)
     self.entity_models[entity_type] = {
-        components = components,
+        component_keys = component_keys,
         behavior_keys = behavior_keys
     }
 end
@@ -7033,6 +7082,7 @@ local components = {}
 local yecs = require("core.yecs")
 local palette_data = require("core.data.palette_data")
 local copy = require("utils.copy")
+local debug_log = require("utils.debug_log")
 
 local deep_copy = copy.deep_copy
 
@@ -7083,30 +7133,44 @@ yecs.Component:Register("input", {
     transparent = false,
     _operations = {
         _OnTouchBegan = function(self, x, y)
-            print("_OnTouchBegan")
+            debug_log.log("_OnTouchBegan")
             return self:OnTouchBegan(x, y)
         end,
         _OnTouchMoved = function(self, x, y)
-            print("_OnTouchMoved")
+            debug_log.log("_OnTouchMoved")
             self:OnTouchMoved(x, y)
         end,
         _OnTouchEnded = function(self, x, y)
-            print("_OnTouchEnded")
+            debug_log.log("_OnTouchEnded")
             self:OnTouchEnded(x, y)
             self:OnClicked(x, y)
         end,
+        _OnKeyPressed = function(self, keycode)
+            debug_log.log(string.format("_OnKeyPressed: %s", keycode))
+            self:OnKeyPressed(keycode)
+        end,
+        _OnKeyReleased = function (self, keycode)
+            debug_log.log(string.format("_OnKeyReleased: %s", keycode))
+            self:OnKeyReleased(keycode)
+        end,
 
         OnClicked = function(self, x, y)
-            print("OnClicked")
+            debug_log.log("OnClicked")
         end,
         OnTouchBegan = function(self, x, y)
-            print("OnTouchBegan")
+            debug_log.log("OnTouchBegan")
         end,
         OnTouchMoved = function(self, x, y)
-            print("OnTouchMoved")
+            debug_log.log("OnTouchMoved")
         end,
         OnTouchEnded = function(self, x, y)
-            print("OnTouchEnded")
+            debug_log.log("OnTouchEnded")
+        end,
+        OnKeyPressed = function(self, keycode)
+            debug_log.log(string.format("OnKeyPressed: %s", keycode))
+        end,
+        OnKeyReleased = function(self, keycode)
+            debug_log.log(string.format("OnKeyReleased: %s", keycode))
         end
     }
 })
@@ -7343,7 +7407,7 @@ yecs.Component:Register("animation", {
             }
         end,
         RemoveState = function(self, key)
-            animations[key] = nil
+            self.animations[key] = nil
         end,
         Play = function(self, key)
             local a = self.animations[key]
@@ -7387,20 +7451,21 @@ local yapre = yapre
 local systems = {}
 local yecs = require("core.yecs")
 local emscripten_keycode_mapping = require("core.data.emscripten_keycode_mapping")
+local debug_log = require("utils.debug_log")
 
 -- dummy system
 local dummy_system = {}
 dummy_system.update_order = 0
 function dummy_system:Init()
-    print("dummy Init")
+    debug_log.log("dummy Init")
 end
 
 function dummy_system:Deinit()
-    print("dummy Deinit")
+    debug_log.log("dummy Deinit")
 end
 
 function dummy_system:Update(delta_ms)
-    print("dummy Update ", delta_ms)
+    debug_log.log("dummy Update ", delta_ms)
 end
 yecs.System:Register("dummy", dummy_system)
 
@@ -7410,13 +7475,12 @@ sprite_system.update_order = 2048
 sprite_system.update_when_paused = true
 function sprite_system:Update(delta_ms)
     local tree_system = self.world.systems["tree"]
-    local sprite_entities = self.world:GetEntities(function(entity)
-        return entity.sprite
-    end)
+    local sprite_entities = self.world:GetEntitiesWithComponent("sprite")
+
     for _, entity in pairs(sprite_entities) do
         local position = entity.position
         if tree_system then
-            position = tree_system:GetPosition(entity)
+            position = tree_system:GetGlobalPosition(entity)
         end
         position = position or {
             x = 0,
@@ -7428,9 +7492,8 @@ function sprite_system:Update(delta_ms)
             local offset = sprite_data.offset
             local size = sprite_data.size
             local color = sprite_data.color
-            yapre.DrawSprite(sprite_data.texture, math.floor(position.x + offset.x), math.floor(position.y + offset.y),
-                math.floor(position.z + offset.z), math.floor(size.width), math.floor(size.height), 0., color.r,
-                color.g, color.b)
+            yapre.DrawSprite(sprite_data.texture, {position.x + offset.x, position.y + offset.y, position.z + offset.z},
+                {size.width, size.height}, 0., {color.r, color.g, color.b})
         end
     end
 end
@@ -7443,9 +7506,7 @@ local input_system = {
 }
 
 function input_system:Update(delta_ms)
-    local input_entities = self.world:GetEntities(function(entity)
-        return entity.input
-    end)
+    local input_entities = self.world:GetEntitiesWithComponent("input")
     local tree_system = self.world.systems["tree"]
 
     for _, mouse_event in ipairs(self._mouse_events) do
@@ -7464,7 +7525,7 @@ function input_system:Update(delta_ms)
 
                 local position = nil
                 if tree_system then
-                    position = tree_system:GetPosition(entity)
+                    position = tree_system:GetGlobalPosition(entity)
                 end
 
                 position = position or entity.position
@@ -7499,6 +7560,18 @@ function input_system:Update(delta_ms)
         ::continue0::
     end
 
+    for _, key_event in ipairs(self._key_events) do
+        if key_event.state == 1 then
+            for _, entity in pairs(input_entities) do
+                entity.input:_OnKeyPressed(key_event.keycode)
+            end
+        else
+            for _, entity in pairs(input_entities) do
+                entity.input:_OnKeyReleased(key_event.keycode)
+            end
+        end
+    end
+
     self._key_events = {}
     self._mouse_events = {}
 end
@@ -7508,7 +7581,7 @@ function input_system:Init()
         if yapre.platform == "emscripten" then
             keycode = emscripten_keycode_mapping:GetKeyCode(keycode)
         end
-        print(string.format("%s-[OnKey] %i:%i:%i:%i", self.world, timestamp, state, multi, keycode))
+        debug_log.log(string.format("%s-[OnKey] %i:%i:%i:%i", self.world, timestamp, state, multi, keycode))
         table.insert(self._key_events, {
             timestamp = timestamp,
             state = state,
@@ -7521,7 +7594,7 @@ function input_system:Init()
     end
 
     local function OnMouse(timestamp, state, button, x, y)
-        print(string.format("%s-:[OnMouse] %i:%i:%i:(%i,%i)", self.world, timestamp, state, button, x, y))
+        debug_log.log(string.format("%s-:[OnMouse] %i:%i:%i:(%i,%i)", self.world, timestamp, state, button, x, y))
         table.insert(self._mouse_events, {
             timestamp = timestamp,
             state = state,
@@ -7567,9 +7640,8 @@ end
 function tree_system:Update(delta_ms)
     self.global_position = {}
     local world = self.world
-    local tree_entities = self.world:GetEntities(function(entity)
-        return entity.tree
-    end)
+    local tree_entities = self.world:GetEntitiesWithComponent("tree")
+
     for _, entity in pairs(tree_entities) do
         local parent = entity.tree.parent
         if parent == nil then
@@ -7592,7 +7664,7 @@ end
 function tree_system:Deinit()
 end
 
-function tree_system:GetPosition(entity)
+function tree_system:GetGlobalPosition(entity)
     local position = self.global_position[entity.key]
     if position then
         return position
@@ -7614,9 +7686,8 @@ end
 
 function tick_system:Update(delta_ms)
     local world = self.world
-    local tick_entities = self.world:GetEntities(function(entity)
-        return entity.tick
-    end)
+    local tick_entities = self.world:GetEntitiesWithComponent("tick")
+
     local g_tick_callbacks = {}
     local g_timer_callbacks = {}
     for _, entity in pairs(tick_entities) do
@@ -7674,6 +7745,7 @@ return systems
 local serialization = {}
 local yecs = require("core.yecs")
 local copy = require("utils.copy")
+local debug_log = require("utils.debug_log")
 
 function serialization:DumpWorld(world)
     local world_data = {}
@@ -7700,7 +7772,7 @@ end
 
 function serialization:LoadWorld(world_data)
     local world = yecs.World:New(world_data.key)
-    world:AddSystems(world_data.systems)
+    world:AddSystemsByKeys(world_data.systems)
 
     world.paused = world_data.paused
     world.update_delta = world_data.update_delta
@@ -7732,9 +7804,9 @@ function serialization:MakeEntities(entities_data)
         if entity.Init then
             entity:Init()
         end
-        if entity.OnInit then
-            entity:OnInit()
-        end
+
+        -- behaviors OnInit
+        entity:_BehaviorOnInit()
 
         entity.key = entity_key
         entities[entity_key] = entity
@@ -7746,7 +7818,7 @@ end
 function serialization:DumpData(obj, seen)
     if type(obj) ~= "table" then
         if type(obj) == "function" then
-            print("unable to dump function")
+            debug_log.log("unable to dump function")
             return nil
         end
         return obj
@@ -7779,7 +7851,7 @@ local yecs = core.yecs
 
 function splash_screen:Show(callback)
     local world = yecs.World:New("splash_world")
-    world:AddSystems({"sprite", "tick"})
+    world:AddSystemsByKeys({"sprite", "tick"})
 
     local image = yecs.EntityFactory:Make("image")
 
@@ -7928,7 +8000,7 @@ emscripten_keycode_mapping.keycode_mapping = {
 }
 
 function emscripten_keycode_mapping:GetKeyCode(key_code)
-    n_key_code = self.keycode_mapping[key_code] or key_code
+    local n_key_code = self.keycode_mapping[key_code] or key_code
     return n_key_code
 end
 
@@ -8049,7 +8121,7 @@ local yecs = require("core.yecs")
 -- button
 local button_behavior = {}
 yecs.Behavior:Register("button", button_behavior)
-function button_behavior:Init()
+function button_behavior:OnInit()
     self.sprite:AddSprite("button", "./image/ui/button16/1.png", {
         size = {
             width = 32,
@@ -8136,7 +8208,7 @@ yecs.EntityFactory:Register("label", {"position", "sprite", "tree", "size", "tex
 -- image
 local image_behavior = {}
 yecs.Behavior:Register("image", image_behavior)
-function image_behavior:Init()
+function image_behavior:OnInit()
     local default_image_size = {
         width = 32,
         height = 32
@@ -8248,7 +8320,7 @@ yecs.EntityFactory:Register("image", {"position", "sprite", "size", "tick", "ani
 -- progress
 local progress_behavior = {}
 yecs.Behavior:Register("progress", progress_behavior)
-function progress_behavior:Init()
+function progress_behavior:OnInit()
     local default_size = {
         width = 64,
         height = 4
@@ -8312,7 +8384,7 @@ yecs.EntityFactory:Register("progress", {"position", "sprite", "tree", "size", "
 -- panel
 local panel_behavior = {}
 yecs.Behavior:Register("panel", panel_behavior)
-function panel_behavior:Init()
+function panel_behavior:OnInit()
     local panel_size = {
         width = 64,
         height = 64
@@ -8345,7 +8417,7 @@ yecs.EntityFactory:Register("panel", {"position", "sprite", "tree", "size"}, {"p
 -- palette
 local palette_behavior = {}
 yecs.Behavior:Register("palette", palette_behavior)
-function palette_behavior:Init()
+function palette_behavior:OnInit()
     local palette_size = 4
     local offset_x = 0
     for i, color in ipairs(palette_data.colors) do
@@ -8370,7 +8442,7 @@ yecs.EntityFactory:Register("palette", {"position", "sprite", "tree", "size"}, {
 -- progress_selector
 local progress_selector_behavior = {}
 yecs.Behavior:Register("progress_selector", progress_selector_behavior)
-function progress_selector_behavior:Init()
+function progress_selector_behavior:OnInit()
     local block_width = 2
     local block_interval = 1
     local block_height = 2
@@ -8489,7 +8561,7 @@ yecs.Behavior:Register("image_behavior", {
 
 function test_world:Make()
     local world = yecs.World:New("test_world")
-    world:AddSystems({"sprite", "input", "tree", "tick"})
+    world:AddSystemsByKeys({"sprite", "input", "tree", "tick"})
 
     local button1 = yecs.EntityFactory:Make("button", {"button1_behavior"})
     local button2 = yecs.EntityFactory:Make("button", {"button2_behavior"})
@@ -8561,6 +8633,7 @@ function test_world:Make()
 end
 
 return test_world
+local yapre = yapre
 local app = {}
 
 local core = require("core")
@@ -8650,7 +8723,7 @@ end
 
 function rewind_controller:Make(game_worlds)
     local world = yecs.World:New("rewind_controller")
-    world:AddSystems({"sprite", "input", "tree", "tick"})
+    world:AddSystemsByKeys({"sprite", "input", "tree", "tick"})
     world.systems["input"].OnKey = function(input_system, timestamp, state, multi, keycode)
         self:OnKey(timestamp, state, multi, keycode)
     end
@@ -8912,7 +8985,7 @@ yecs.Behavior:Register("world_mario_music_stop_btn_behavior", {
 
 function world_mario_music:Make()
     local world = yecs.World:New("world_mario_music")
-    world:AddSystems({"sprite", "input", "tree", "tick"})
+    world:AddSystemsByKeys({"sprite", "input", "tree", "tick"})
 
     local play_btn = yecs.EntityFactory:Make("button", {"world_mario_music_play_btn_behavior"})
     local stop_btn = yecs.EntityFactory:Make("button", {"world_mario_music_stop_btn_behavior"})
@@ -8970,7 +9043,7 @@ yecs.Behavior:Register("world_slides_prev_btn_behavior", {
 
 function world_slides:Make()
     local world = yecs.World:New("world_slides")
-    world:AddSystems({"sprite", "input", "tree", "tick"})
+    world:AddSystemsByKeys({"sprite", "input", "tree", "tick"})
 
     local next_btn = yecs.EntityFactory:Make("button", {"world_slides_next_btn_behavior"})
     local prev_btn = yecs.EntityFactory:Make("button", {"world_slides_prev_btn_behavior"})
@@ -9031,7 +9104,7 @@ yecs.Behavior:Register("world_image_image2_behavior", {
 
 function world_image:Make()
     local world = yecs.World:New("world_image")
-    world:AddSystems({"sprite", "input", "tree", "tick"})
+    world:AddSystemsByKeys({"sprite", "input", "tree", "tick"})
 
     local image1 = yecs.EntityFactory:Make("image")
     image1.position = {
@@ -9095,13 +9168,12 @@ local yecs = core.yecs
 
 function world_word_slide:Make()
     local world = yecs.World:New("world_word_slide_" .. self.words)
-    world:AddSystems({"sprite", "input", "tree", "tick"})
+    world:AddSystemsByKeys({"sprite", "input", "tree", "tick"})
 
     local words = yecs.EntityFactory:Make("label")
     words:SetText(self.words)
 
     local rs = words:GetRenderSize()
-    print(rs.width, rs.height, self.words)
     words.position = {
         x = yapre.render_width / 2 - rs.width / 2,
         y = yapre.render_height / 2 + rs.height,
@@ -9144,7 +9216,7 @@ yecs.Behavior:Register("world_label_time_label_behavior", {
 
 function world_label:Make()
     local world = yecs.World:New("world_label")
-    world:AddSystems({"sprite", "input", "tree", "tick"})
+    world:AddSystemsByKeys({"sprite", "input", "tree", "tick"})
 
     local time_label = yecs.EntityFactory:Make("label", {"world_label_time_label_behavior"})
     local world_label_a = yecs.EntityFactory:Make("label")
@@ -9430,7 +9502,6 @@ yecs.Behavior:Register("world_flappy_duck_button_behavior", {
             return
         end
         duck:Fly()
-
     end,
     OnInit = function(self)
         self:AddComponent("tags")
@@ -9439,6 +9510,12 @@ yecs.Behavior:Register("world_flappy_duck_button_behavior", {
         self.position.y = yapre.render_height - 64 - 32
         self.position.x = yapre.render_width - 64 - 32
         self.position.z = 128
+        self.input.OnKeyPressed = function(self, keycode)
+            if keycode == string.byte(" ") then
+                self.entity:OnClicked(0, 0)
+                self.entity:
+            end
+        end
     end
 })
 
@@ -9565,7 +9642,7 @@ end
 
 function world_flappy_duck:Make()
     local world = yecs.World:New("world_flappy_duck")
-    world:AddSystems({"sprite", "input", "tree", "tick"})
+    world:AddSystemsByKeys({"sprite", "input", "tree", "tick"})
 
     local button = yecs.EntityFactory:Make("button", {"world_flappy_duck_button_behavior"})
     world:AddEntity(button)
@@ -10438,6 +10515,25 @@ function reload.ReloadAll()
 end
 
 return reload
+local debug_log = {}
+debug_log._print = print
+
+function debug_log.enable()
+    debug_log.log = function(...)
+        debug_log._print("[debug log]", ...)
+    end
+    print = debug_log.log
+end
+
+function debug_log.disable()
+    debug_log.log = function()
+    end
+    print = debug_log._print
+end
+
+debug_log.enable()
+
+return debug_log
 --[[
 Save Table to File
 Load Table from File
