@@ -8159,7 +8159,18 @@ function button_behavior:OnInit()
             on_clicked_func(self.entity, x, y)
         end
     end
-
+    function self.input.OnKeyPressed(self, keycode)
+        local bind_key = self.entity.data.button_bind_key
+        if bind_key and keycode == string.byte(bind_key) then
+            self:OnTouchBegan(0, 0)
+        end
+    end
+    function self.input.OnKeyReleased(self, keycode)
+        local bind_key = self.entity.data.button_bind_key
+        if bind_key and keycode == string.byte(bind_key) then
+            self:OnTouchEnded(0, 0)
+        end
+    end
     return self
 end
 
@@ -8185,7 +8196,11 @@ function button_behavior:SetButtonSize(width, height)
     }
 end
 
-yecs.EntityFactory:Register("button", {"position", "sprite", "tree", "size", "input", "tick", "animation"}, {"button"})
+function button_behavior:BindKey(key)
+    self.data.button_bind_key = key
+end
+
+yecs.EntityFactory:Register("button", {"position", "sprite", "tree", "size", "input", "tick", "animation", "data"}, {"button"})
 
 -- label
 local label_behavior = {}
@@ -8502,6 +8517,93 @@ function progress_selector_behavior:GetMax()
 end
 
 yecs.EntityFactory:Register("progress_selector", {"position", "sprite", "tree", "size", "data"}, {"progress_selector"})
+
+-- ui
+-- joystick
+local joystick_behavior = {}
+yecs.Behavior:Register("joystick", joystick_behavior)
+function joystick_behavior:OnInit()
+    self.sprite:AddSprite("joystick_head", "./image/ui/joystick32/1.png", {
+        size = {
+            width = 64,
+            height = 64
+        },
+        offset = {
+            x = 0,
+            y = 0,
+            z = 2
+        }
+    })
+
+    self.sprite:AddSprite("joystick_background", "./image/ui/joystick32/2.png", {
+        size = {
+            width = 64,
+            height = 64
+        },
+        offset = {
+            x = 0,
+            y = 0,
+            z = 1
+        }
+    })
+
+    self.size.width = 64
+    self.size.height = 64
+
+    function self.input:OnTouchBegan(x, y)
+        local cx = self.entity.position.x + self.entity.size.width / 2
+        local cy = self.entity.position.y + self.entity.size.height / 2
+        self.entity:SetJoystickHeadOffset(x - cx, y - cy)
+
+        return true
+    end
+    function self.input:OnTouchMoved(x, y)
+        local cx = self.entity.position.x + self.entity.size.width / 2
+        local cy = self.entity.position.y + self.entity.size.height / 2
+        self.entity:SetJoystickHeadOffset(x - cx, y - cy)
+
+        return true
+    end
+    function self.input:OnTouchEnded(x, y)
+        self.entity:SetJoystickHeadOffset(0, 0)
+    end
+
+    return self
+end
+
+function joystick_behavior:SetJoystickHeadOffset(x, y)
+    local head_sprite = self.sprite.sprites["joystick_head"]
+    if head_sprite then
+        head_sprite.offset = {
+            x = math.max(-self.size.width / 2, math.min(self.size.width / 2, x)),
+            y = math.max(-self.size.height / 2, math.min(self.size.height / 2, y)),
+            z = head_sprite.offset.z
+        }
+    end
+end
+
+function joystick_behavior:SetJoystickSize(width, height)
+    local head_sprite = self.sprite.sprites["joystick_head"]
+    if head_sprite then
+        head_sprite.size = {
+            width = width,
+            height = height
+        }
+    end
+    local backgroud_sprite = self.sprite.sprites["joystick_background"]
+    if backgroud_sprite then
+        backgroud_sprite.size = {
+            width = width,
+            height = height
+        }
+    end
+    self.size = {
+        width = width,
+        height = height
+    }
+end
+
+yecs.EntityFactory:Register("joystick", {"position", "sprite", "tree", "size", "input"}, {"joystick"})
 
 return entities
 local app = require("app.app")
@@ -8844,6 +8946,7 @@ local world_slides = require("app.game.world_slides")
 local world_label = require("app.game.world_label")
 local world_image = require("app.game.world_image")
 local world_flappy_duck = require("app.game.world_flappy_duck")
+local world_dungeon = require("app.game.world_dungeon")
 
 game.worlds = setmetatable({}, {
     __mode = "v"
@@ -8855,7 +8958,7 @@ function game:Init()
     self.worlds = {}
     self.rewind_controller = rewind_controller:Make(self.worlds)
 
-    self.worlds_to_show = {world_label, world_mario_music, world_image, world_flappy_duck}
+    self.worlds_to_show = {world_dungeon, world_label, world_mario_music, world_image, world_flappy_duck}
 
     self.worlds["world_slides"] = world_slides:Make()
     self.worlds[self.cur_world_idx] = self.worlds_to_show[self.cur_world_idx]:Make()
@@ -9510,11 +9613,7 @@ yecs.Behavior:Register("world_flappy_duck_button_behavior", {
         self.position.y = yapre.render_height - 64 - 32
         self.position.x = yapre.render_width - 64 - 32
         self.position.z = 128
-        self.input.OnKeyPressed = function(self, keycode)
-            if keycode == string.byte(" ") then
-                self.entity:OnClicked(0, 0)
-            end
-        end
+        self:BindKey(" ")
     end
 })
 
@@ -9666,6 +9765,31 @@ function world_flappy_duck:Make()
 end
 
 return world_flappy_duck
+local yapre = yapre
+
+local core = require("core")
+local yecs = core.yecs
+
+local world_dungeon = {}
+
+function world_dungeon:Make()
+    local world = yecs.World:New("world_dungeon")
+    world:AddSystemsByKeys({"sprite", "input", "tree", "tick"})
+
+    local joystick = yecs.EntityFactory:Make("joystick")
+    
+    joystick.position = {
+        x = yapre.render_width / 2 - 32,
+        y = yapre.render_height / 2 - 32,
+        z = 2
+    }
+
+    world:AddEntity(joystick)
+
+    return world
+end
+
+return world_dungeon
 local copy_module = {}
 
 local function deep_copy(obj, seen)
@@ -10759,6 +10883,12 @@ FÁ(£`Œr ëÄ²À÷ù    IEND®B`‚‰PNG
    sRGB ®Îé  öIDATxœíÝ¿j[gà£Ò½4èzCé ­/É˜]¥Kèl²˜@é–PHðÒ©à¡œMÐP0øÒÐ ðÚMÝŒÛúd½þô{žIƒŽôž?6?ÞWç;Ã                                                                                                                                                                                                                                              eT]À6ì{ËM|Îåpq¼ €ÝöYu  l—  ¦û‘æ¦Æ»¬ÇX ú£ F  óyu›t|zrýúà›/+Ù=ï?^¿þùè§ÂJ €V:€  a@ €0  @  Œ  F  #  „  Â€  avêI äÙö–-Û_W£MÕ ½Ð ×|2yV]Â£v>?«. x`:€  a@ €0q#àU¿|uP]Â£ðÃ?Õ%  [¤ F  #  „  Â€  a@ €0  @  Œ  F  ý(8úw9\ªkh±˜Ï–-Û'ÓÒýO¯¿Uúþ·êýøµÖ_}þz?þÕªŸ  @  Œ  &ú7€_üú_u	ÃAu À6é  „  Â€  a@ €0  @  Œ  F  #  „  Â€  a¢ŸLÿ¾ýú»eËöï>¼mªú3žLKÏÿb>kº~«ë¯þþÞ_ïõ·ê}ÿ[ë¯¦ F  #  „  Â€  a¢ï~³8®.á‘xZ]  °E:€  a@ €0  @  Œ  F  #  „  Â€  a¢ŸBÿÞ}x;ª®:‹ùlY]¬k<™úÿÕÀß@ €0  @  Œ  &ú&¿ŸV—  °u:€  a@ €0q#àóùYu	  ¥t  Â€  a@ €0  @  Œ  F  · »åå÷?.[¶ñúÕhSµ¬c<™6}ÿb>kÚÿt­Ç¿Uïç¯ºþêóG-ç¿  @  Œ  F  #  „  ÂX¦cO&Ïn}Ïùül•  =Ñ #  „1¾ÅMcÖªÑê]Æ¾7½ß8 @ €8  @  Œ  F  ã.`ºöâõ«Qu•Æ“iéþ/æ³eå÷·îuý½«¾þÈVý÷Ûûõ¯ F  =¾ï¢Ê÷Ýö!^^ýÌ»Ôp|z²ñ €¾é  „  ÂD€{çÙ¾ À:t  Â€  a¢GÀw¡Þt§mã×ª;—€ÇE  Œ  &zœà¾‹]¯¾ß8 v“  @  Œ  Æo éÚ_§¿-[¶?<z>ÚT-óYÓþ·O¦]¿Þë§–ë§ãWK  Œà-Ü	 ì@ €0  @#à·:Â¾Ë¢ÐÇ§'Y ðè  „  ÂqG3 0:€  q@ €0  @  Œ  F  #  „± ];<z>ª®¡Òx2ÞÚ¸~ — ¸¦»<WwÕ]a~ˆÏ ø”0 @  Œðšbüj¤ lƒ  @  Œ07ºxÿñúõ›ß_^¿¾®, Ó #  „ÙÙðêø’õ¬Ž}ÿøó_c_ Ø:€  a@ €0Ýõö‡½eu»ÊÝ¾ °›t  Â€                                                                                                                                                                                                        Àµÿ`rËB7Y´A    IEND®B`‚‰PNG
 
    IHDR         r¶$   sRGB ®Îé   IDAT™cüÿÿÿ&(  =ø Ù|€F    IEND®B`‚‰PNG
+
+   IHDR           szzô   sRGB ®Îé   “IDATX…c`£`Œ‚‘ÉÕhÄ ø™Žá=Yf±k±®•?ªÄ±ÿÉqIŠÿcXŒ.ÛH’#˜Hq .Ð».‰¡w]Yz‰v 1¾g`€DzúÀHNØ@qÐ<²õR%
+(î€á‘($—^¸
+¢ËÇ6200Ð¸ Âæ ·(£`Œ‚Q  Õ&Ñ˜ì    IEND®B`‚‰PNG
+
+   IHDR           szzô   sRGB ®Îé   —IDATX…í—Ñ€ D7`öŸÁU¿Hb„Òr$rŸ†ÞkK"­ƒ@>Ö¾Ÿ¸\¯Ws@}µœéV€o[Ä=L†¤*ÙKý4Á-Þ‡L$Ëê?3à5ÖW0³ú’Iï =Jûs6½; €ý#ZDÿ~“¨ÉŒ$ÖŸ	“¨cy¨6°\ÍèË©hƒÕ\Ïoo‰AëHuÂÛ    IEND®B`‚‰PNG
 
    IHDR         óÿa   sRGB ®Îé   _IDAT8c`hÀˆÌ1büOŒ¦sïáúà#Áÿ»^l$ÊV7	¸!Œ¤jF7„‰$]XÀ¨HÌ®Û@´&dµ,¸$ˆ(	)4-‘(M«gÍGMHÈ†c rRx  Cq½T×    IEND®B`‚‰PNG
 
