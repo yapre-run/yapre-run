@@ -8200,7 +8200,8 @@ function button_behavior:BindKey(key)
     self.data.button_bind_key = key
 end
 
-yecs.EntityFactory:Register("button", {"position", "sprite", "tree", "size", "input", "tick", "animation", "data"}, {"button"})
+yecs.EntityFactory:Register("button", {"position", "sprite", "tree", "size", "input", "tick", "animation", "data"},
+    {"button"})
 
 -- label
 local label_behavior = {}
@@ -8523,7 +8524,7 @@ yecs.EntityFactory:Register("progress_selector", {"position", "sprite", "tree", 
 local joystick_behavior = {}
 yecs.Behavior:Register("joystick", joystick_behavior)
 function joystick_behavior:OnInit()
-    self.sprite:AddSprite("joystick_head", "./image/ui/joystick32/1.png", {
+    self.sprite:AddSprite("joystick_head", "./image/ui/joystick32/4.png", {
         size = {
             width = 64,
             height = 64
@@ -8535,7 +8536,7 @@ function joystick_behavior:OnInit()
         }
     })
 
-    self.sprite:AddSprite("joystick_background", "./image/ui/joystick32/2.png", {
+    self.sprite:AddSprite("joystick_background", "./image/ui/joystick32/1.png", {
         size = {
             width = 64,
             height = 64
@@ -8555,6 +8556,14 @@ function joystick_behavior:OnInit()
         local cy = self.entity.position.y + self.entity.size.height / 2
         self.entity:SetJoystickHeadOffset(x - cx, y - cy)
 
+        local on_joystick_func = self.entity.OnJoystick
+        if on_joystick_func then
+            local size = self.entity.size
+            local w = size.width
+            local h = size.height
+            on_joystick_func(self.entity, 2 * (x - cx) / w, 2 * (y - cy) / h)
+        end
+
         return true
     end
     function self.input:OnTouchMoved(x, y)
@@ -8562,10 +8571,22 @@ function joystick_behavior:OnInit()
         local cy = self.entity.position.y + self.entity.size.height / 2
         self.entity:SetJoystickHeadOffset(x - cx, y - cy)
 
+        local on_joystick_func = self.entity.OnJoystick
+        if on_joystick_func then
+            local size = self.entity.size
+            local w = size.width
+            local h = size.height
+            on_joystick_func(self.entity, 2. * (x - cx) / w, 2. * (y - cy) / h)
+        end
+
         return true
     end
     function self.input:OnTouchEnded(x, y)
         self.entity:SetJoystickHeadOffset(0, 0)
+        local on_joystick_func = self.entity.OnJoystick
+        if on_joystick_func then
+            on_joystick_func(self.entity, 0, 0)
+        end
     end
 
     return self
@@ -9772,19 +9793,52 @@ local yecs = core.yecs
 
 local world_dungeon = {}
 
+yecs.Behavior:Register("world_dungeon_joystick_behavior", {
+    OnJoystick = function(self, x, y)
+        local dot = self.world:GetEntityByTags({"dot"})
+        dot.data["speed"] = {
+            x = x,
+            y = y
+        }
+    end
+})
+
 function world_dungeon:Make()
     local world = yecs.World:New("world_dungeon")
     world:AddSystemsByKeys({"sprite", "input", "tree", "tick"})
 
-    local joystick = yecs.EntityFactory:Make("joystick")
-    
+    local dot = yecs.EntityFactory:Make("image")
+    dot:AddComponent("tags")
+    dot:AddComponent("data")
+    dot:AddComponent("tick")
+    dot.tags["dot"] = true
+    dot.data["speed"] = {
+        x = 0,
+        y = 0
+    }
+
+    dot.tick:AddTick("tick", function (delta_ms)
+        dot.position.x = dot.position.x + delta_ms * dot.data.speed.x / 10 
+        dot.position.y = dot.position.y + delta_ms * dot.data.speed.y / 10
+    end)
+
+    dot:SetTextureSize(2, 2)
+    dot.position = {
+        x = yapre.render_width / 2,
+        y = yapre.render_height / 2,
+        z = 2
+    }
+
+    local joystick = yecs.EntityFactory:Make("joystick", {"world_dungeon_joystick_behavior"})
+
     joystick.position = {
         x = yapre.render_width / 2 - 32,
-        y = yapre.render_height / 2 - 32,
+        y = yapre.render_height - 64,
         z = 2
     }
 
     world:AddEntity(joystick)
+    world:AddEntity(dot)
 
     return world
 end
@@ -10884,11 +10938,18 @@ FÁ(£`Œr ëÄ²À÷ù    IEND®B`‚‰PNG
 
    IHDR         r¶$   sRGB ®Îé   IDAT™cüÿÿÿ&(  =ø Ù|€F    IEND®B`‚‰PNG
 
+   IHDR           szzô   sRGB ®Îé   —IDATX…í—Ñ€ D7`öŸÁU¿Hb„Òr$rŸ†ÞkK"­ƒ@>Ö¾Ÿ¸\¯Ws@}µœéV€o[Ä=L†¤*ÙKý4Á-Þ‡L$Ëê?3à5ÖW0³ú’Iï =Jûs6½; €ý#ZDÿ~“¨ÉŒ$ÖŸ	“¨cy¨6°\ÍèË©hƒÕ\Ïoo‰AëHuÂÛ    IEND®B`‚‰PNG
+
    IHDR           szzô   sRGB ®Îé   “IDATX…c`£`Œ‚‘ÉÕhÄ ø™Žá=Yf±k±®•?ªÄ±ÿÉqIŠÿcXŒ.ÛH’#˜Hq .Ð».‰¡w]Yz‰v 1¾g`€DzúÀHNØ@qÐ<²õR%
 (î€á‘($—^¸
 ¢ËÇ6200Ð¸ Âæ ·(£`Œ‚Q  Õ&Ñ˜ì    IEND®B`‚‰PNG
 
-   IHDR           szzô   sRGB ®Îé   —IDATX…í—Ñ€ D7`öŸÁU¿Hb„Òr$rŸ†ÞkK"­ƒ@>Ö¾Ÿ¸\¯Ws@}µœéV€o[Ä=L†¤*ÙKý4Á-Þ‡L$Ëê?3à5ÖW0³ú’Iï =Jûs6½; €ý#ZDÿ~“¨ÉŒ$ÖŸ	“¨cy¨6°\ÍèË©hƒÕ\Ïoo‰AëHuÂÛ    IEND®B`‚‰PNG
+   IHDR           szzô   sRGB ®Îé   §IDATX…c`£`0`$W£ƒàdþ9†÷d™E²&˜Å»^lDw“ð'Ë!D+Æe1: Õ!D)2büOÈbl!ÆL$™J@Ð…¸|?»n
+?µ) C1¡@V [ŽKŒ€×uØ|OÈ"ô 
+žF@V.À•H2C [–Ã&F-	‡FeDŒCh^ãrÛ £`8  ”ÁKÑhÖ    IEND®B`‚‰PNG
+
+   IHDR           szzô   sRGB ®Îé   ¬IDATX…c`£`0`$W£ƒàdþ9†÷d™ÅB®Å¡i‰¨³æÿ'Ç!D+Æi1X=k>)!J‘ƒàBcs1Ž`"ÉT ‚.ÄåûWÞ¡ð5t„0Ô
+d… ºå¸Äˆx]‡Í÷„,B	B¡0ài`Ôdå\é€Ôøg` 3°e9lbÄ€Ñ’phTFÄ8„T‹Év ºC`€ÜÉ(£`À ôKq.p#    IEND®B`‚‰PNG
 
    IHDR         óÿa   sRGB ®Îé   _IDAT8c`hÀˆÌ1büOŒ¦sïáúà#Áÿ»^l$ÊV7	¸!Œ¤jF7„‰$]XÀ¨HÌ®Û@´&dµ,¸$ˆ(	)4-‘(M«gÍGMHÈ†c rRx  Cq½T×    IEND®B`‚‰PNG
 
